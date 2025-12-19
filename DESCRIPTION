@@ -15,3 +15,5 @@ Imports:
     cli,
     curl,
     getPass
+URL: https://github.com/ridout-m/ucLoader
+BugReports: https://github.com/ridout-m/ucLoader/issues
