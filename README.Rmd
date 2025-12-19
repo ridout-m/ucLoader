@@ -1,0 +1,134 @@
+---
+output: github_document
+---
+
+<!-- README.md is generated from README.Rmd. Please edit that file -->
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.path = "man/figures/README-",
+  out.width = "100%"
+)
+```
+
+# ucLoader
+
+<!-- badges: start -->
+<!-- badges: end -->
+
+Load files from Databricks Unity Catalog into R with a simple, consistent interface.
+
+This package is designed for use on rstudio-server / Databricks environments where:
+
+- The Databricks workspace URL is provided via an environment variable.
+- Users authenticate with a Personal Access Token (PAT) when required.
+- Files are downloaded to a temporary location on the machine running the R session, then loaded.
+
+## What it does
+
+- Downloads a file from Unity Catalog via the Databricks REST API
+- Stores it in a temporary file
+- Loads it into R using base functions
+- Deletes the temporary file automatically
+
+Exposed functions:
+
+- UC.read.csv(): download a CSV and return a data.frame
+- UC.load(): download an .RData/.rda and load objects into an environment
+
+## Requirements
+
+This package expects the following environment variables:
+
+- DATABRICKS_HOST: the Databricks workspace URL (set by your cluster init script)
+- DATABRICKS_TOKEN: a Databricks PAT (if missing you will be prompted securely)
+
+Notes:
+
+- PAT entry is masked. 
+- The token is stored only in the current R process environment, read only when needed, and never persisted by ucLoader.
+
+## Installation
+
+Install the development version from GitHub:
+
+``` r
+install.packages("remotes")
+remotes::install_github("ridout-m/ucLoader")
+```
+
+Then load it:
+
+``` r
+library(ucLoader)
+```
+
+## Setup
+
+In your cluster init script, ensure DATABRICKS_HOST is set. Example:
+
+``` bash
+export DATABRICKS_HOST="https://adb-xxxxxxxxxxxxxxxx.xx.azuredatabricks.net"
+```
+
+In an interactive R session, if DATABRICKS_TOKEN is not set, ucLoader will prompt you for a PAT
+using getPass (your input is not echoed to the console).
+
+If you prefer to set it manually for the current session:
+
+``` r
+Sys.setenv(DATABRICKS_TOKEN = "dapiXXXXXXXXXXXXXXXXXXXXXXXX")
+```
+
+## Usage
+
+### Read a CSV
+
+``` r
+library(ucLoader)
+
+df <- UC.read.csv("/Volumes/some_folder/my_objects.csv")
+str(df)
+```
+
+### Load an .RData into the global environment
+
+``` r
+UC.load("/Volumes/some_folder/my_objects.RData")
+```
+
+### Load an .RData into a specific environment
+
+``` r
+e <- new.env(parent = emptyenv())
+UC.load("/Volumes/some_folder/my_objects.RData", envir = e)
+ls(e)
+```
+
+## Behaviour and troubleshooting
+
+- If DATABRICKS_HOST is missing, the package stops with a clear error message.
+- If DATABRICKS_TOKEN is missing, you will be prompted for a PAT.
+- If the PAT is invalid/expired, you will be prompted once to retry (configurable by function args).
+- Downloads use two endpoints (A then B) for robustness across UC file access modes.
+
+Common issues:
+
+- 403 / permission errors: check you have access to the UC path and the PAT is correct.
+- “Both UC file endpoints failed”: confirm the UC path is correct and that the workspace host is correct.
+
+## Development notes
+
+README.md is generated from README.Rmd.
+
+To re-render after changes:
+
+``` r
+devtools::build_readme()
+```
+
+## License
+
+MIT.

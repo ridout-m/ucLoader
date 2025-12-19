@@ -1,0 +1,17 @@
+Package: ucLoader
+Title: Load Files from Databricks Unity Catalog into R
+Version: 0.1.0
+Authors@R: 
+    person("Mackenzie", "Ridout", , "Mackenzie.Ridout@defra.gov.uk", role = c("aut", "cre"))
+Description: Convenience helpers to download files from Databricks Unity Catalog
+    via the REST API and load them into an R session (e.g. read CSVs or load
+    .RData files). Designed for use on RStudio Server / Databricks where the
+    Databricks host is provided via environment variables.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.1
+Imports: 
+    cli,
+    curl,
+    getPass
