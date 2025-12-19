@@ -123,12 +123,6 @@ Common issues:
 
 README.md is generated from README.Rmd.
 
-To re-render after changes:
-
-``` r
-devtools::build_readme()
-```
-
 ## License
 
 MIT.
