@@ -18,6 +18,8 @@ The Databricks workspace URL must be provided via the environment variable
 \itemize{
 \item \link{UC_load} Load an \code{.RData}/\code{.rda} file into an environment.
 \item \link{UC_read.csv} Read a CSV into a data.frame.
+\item \link{UC_save} Save an object to a UC Volume file as \code{.RData}
+\item \link{UC_download} Download a UC Volume file and return the local path.
 }
 }
 
@@ -29,6 +31,14 @@ The Databricks workspace URL must be provided via the environment variable
 }
 }
 
+\seealso{
+Useful links:
+\itemize{
+  \item \url{https://github.com/ridout-m/ucLoader}
+  \item Report bugs at \url{https://github.com/ridout-m/ucLoader/issues}
+}
+
+}
 \author{
 \strong{Maintainer}: Mackenzie Ridout \email{Mackenzie.Ridout@defra.gov.uk}
 
