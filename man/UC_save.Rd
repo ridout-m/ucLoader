@@ -2,35 +2,32 @@
 % Please edit documentation in R/uc_loader.R
 \name{UC_save}
 \alias{UC_save}
-\title{Save R objects into a Unity Catalog Volume (.RData) and upload}
+\title{Save R objects and upload as \code{.RData} to Unity Catalog}
 \usage{
-UC_save(
-  uc_path,
-  ...,
-  overwrite = TRUE,
-  compress = TRUE,
-  version = NULL,
-  verbose = TRUE
-)
+UC_save(file, path, overwrite = TRUE)
 }
 \arguments{
-\item{uc_path}{Character scalar UC path starting with \verb{/Volumes/.../file.RData}.}
+\item{file}{Object to save (or a named object); see Details.}
 
-\item{...}{Objects to save (as in \link[base:save]{base::save}).}
+\item{path}{Destination UC path, e.g. \verb{/Volumes/cat/schema/tables/file.RData}.}
 
-\item{overwrite}{Logical; if \code{TRUE}, allow overwrite on the UC destination.}
-
-\item{compress}{Passed to \code{\link[base:save]{base::save()}} (default \code{TRUE}).}
-
-\item{version}{Passed to \code{\link[base:save]{base::save()}} (e.g., 2).}
-
-\item{verbose}{Logical; progress messages.}
+\item{overwrite}{Logical; if \code{TRUE}, allow overwrite at destination.}
 }
 \value{
-Invisibly returns \code{uc_path} on success.
+Invisibly returns \code{path} on success.
 }
 \description{
-Works like \code{\link[base:save]{base::save()}}, but writes to a UC Volume path. Objects are saved
-locally to a temporary \code{.RData} file and then uploaded to \code{uc_path} using
-the Unity Catalog Files API.
+Saves objects locally to a temporary \code{.RData} and uploads to a UC path.
+Works like \code{base::save()}, but targets \verb{/Volumes/...}.
+}
+\details{
+This wrapper currently saves the object provided in \code{file} using
+\code{base::save(file, file = tmp)}. If you need to save multiple named objects,
+adapt to collect their names with \code{substitute(list(...))} and call
+\code{do.call(save, list(list = obj_names, file = tmp))}.
+}
+\examples{
+\dontrun{
+UC_save(mtcars, "/Volumes/cat/schema/tables/mtcars.RData", overwrite = TRUE)
+}
 }

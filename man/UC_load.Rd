@@ -2,21 +2,24 @@
 % Please edit documentation in R/uc_loader.R
 \name{UC_load}
 \alias{UC_load}
-\title{Load an .RData file from Unity Catalog}
+\title{Load an \code{.RData} from Unity Catalog}
 \usage{
-UC_load(uc_path, envir = parent.frame(), ...)
+UC_load(path, envir = parent.frame())
 }
 \arguments{
-\item{uc_path}{UC path to the .RData/.rda file.}
+\item{path}{UC path to the \code{.RData}/\code{.rda} file (must start with \verb{/Volumes/}).}
 
-\item{envir}{Environment to load objects into.}
-
-\item{...}{Passed to internal downloader (e.g. \code{verbose}, \code{retry_on_auth}).}
+\item{envir}{Environment to load objects into (default parent frame).}
 }
 \value{
-(Invisible) character vector of object names created by \code{load()}.
+(Invisibly) character vector of object names created by \code{base::load()}.
 }
 \description{
-Downloads the file to a temporary location, loads it into \code{envir}, then deletes the temp file.
-Requires \code{DATABRICKS_HOST} to be set (e.g. via cluster init script).
+Downloads the UC file to a temporary location, loads objects into \code{envir},
+then deletes the temp file.
+}
+\examples{
+\dontrun{
+UC_load("/Volumes/cat/schema/tables/snapshot.RData")
+}
 }

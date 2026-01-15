@@ -4,19 +4,23 @@
 \alias{UC_read.csv}
 \title{Read a CSV from Unity Catalog}
 \usage{
-UC_read.csv(uc_path, ..., stringsAsFactors = FALSE)
+UC_read.csv(path, ..., stringsAsFactors = FALSE)
 }
 \arguments{
-\item{uc_path}{UC path to the .csv file.}
+\item{path}{UC path to the \code{.csv} file (must start with \verb{/Volumes/}).}
 
-\item{...}{Passed to \code{read.csv()}.}
+\item{...}{Passed through to \code{utils::read.csv()}.}
 
-\item{stringsAsFactors}{Passed to \code{read.csv()}.}
+\item{stringsAsFactors}{Logical; forwarded to \code{utils::read.csv()}.}
 }
 \value{
-A data.frame.
+A \code{data.frame}.
 }
 \description{
-Downloads the file to a temporary location, reads it with \code{read.csv()}, then deletes the temp file.
-Requires \code{DATABRICKS_HOST} to be set (e.g. via cluster init script).
+Downloads the UC file to a temp file and reads it with \code{utils::read.csv()}.
+}
+\examples{
+\dontrun{
+df <- UC_read.csv("/Volumes/cat/schema/tables/foo.csv")
+}
 }

@@ -1,147 +1,237 @@
-.uc_validate_pat <- function(host, token) {
-  h <- curl::new_handle()
-  curl::handle_setheaders(h, Authorization = paste("Bearer", token))
-  url <- paste0(host, "/api/2.0/unity-catalog/catalogs?max_results=1")
-  res <- try(curl::curl_fetch_memory(url, handle = h), silent = TRUE)
-  if (inherits(res, "try-error")) return(list(ok = FALSE, code = NA, msg = conditionMessage(attr(res, "condition"))))
-  list(ok = res$status_code == 200, code = res$status_code, msg = rawToChar(res$content))
-}
-
-.download_uc_file <- function(uc_path, dest = NULL, verbose = TRUE, retry_on_auth = TRUE) {
-
-  host <- Sys.getenv("DATABRICKS_HOST", unset = "")
-  if (!nzchar(host)){
-    stop("DATABRICKS_HOST is not set. Ask your admin to set it in the cluster init script.")
-  }
-
-  token <- Sys.getenv("DATABRICKS_TOKEN", unset = "")
-  if (!nzchar(token)){
-    token <- getPass::getPass("Please enter your Databricks PAT: ")
-    Sys.setenv(DATABRICKS_TOKEN = token)
-  }
-
-  check <- .uc_validate_pat(host, token)
-  if (!isTRUE(check$ok) && retry_on_auth) {
-    if (verbose) message("PAT appears invalid (status ", check$code, "). Please enter a valid PAT.")
-    token <- getPass::getPass("PAT invalid/expired. Please enter a valid Databricks PAT: ")
-    Sys.setenv(DATABRICKS_TOKEN = token)
-    check <- .uc_validate_pat(host, token)
-  }
-  if (!isTRUE(check$ok)) stop("Token invalid (status ", check$code, ").")
-
-  path_no_slash <- sub("^/", "", uc_path)
-  url_a <- paste0(host, "/api/2.0/fs/files/",                              utils::URLencode(path_no_slash, reserved = TRUE))
-  url_b <- paste0(host, "/api/2.1/unity-catalog/volumes/files/read?path=", utils::URLencode(uc_path,       reserved = TRUE))
-
-  if (is.null(dest)) {
-    ext <- tools::file_ext(uc_path); if (!nzchar(ext)) ext <- "bin"
-    dest <- tempfile(fileext = paste0(".", ext))
-  }
-
-  h <- curl::new_handle()
-  curl::handle_setheaders(h, Authorization = paste("Bearer", token))
-
-  try_url <- function(u) {
-    cli::cli_inform("Downloading...")
-    tryCatch({
-      curl::curl_download(u, destfile = dest, handle = h, quiet = !verbose)
-      TRUE
-    }, error = function(e) {
-      if (verbose) message("  failed: ", conditionMessage(e))
-      FALSE
-    })
-  }
-
-  ok <- try_url(url_a) || try_url(url_b)
-  if (!ok) stop("Internal error.")
-  if (verbose && ok) cli::cli_alert_success("Downloaded to {dest}")
-  dest
-}
-
-.uc_mkdirs <- function(host, token, uc_path, verbose = FALSE) {
-  path_no_slash <- sub("^/", "", uc_path)
-  url <- paste0(sub("/+$", "", host), "/api/2.0/fs/directories/", utils::URLencode(path_no_slash, reserved = TRUE))
-
-  h <- curl::new_handle()
-  curl::handle_setheaders(h, Authorization = paste("Bearer", token))
-  curl::handle_setopt(h, customrequest = "PUT")
-
-  tryCatch({
-    curl::curl_fetch_memory(url, handle = h)
-    TRUE
-  }, error = function(e) {
-    if (verbose) cat("  (mkdirs skipped: ", conditionMessage(e), ")\n", sep = "")
-    FALSE
-  })
-}
-
-.upload_uc_file <- function(local_path, uc_path, overwrite = TRUE, verbose = TRUE, retry_on_auth = TRUE) {
-
-  host <- Sys.getenv("DATABRICKS_HOST", unset = "")
-  if (!nzchar(host)){
-    stop("DATABRICKS_HOST is not set. Ask your admin to set it in the cluster init script.")
-  }
-
-  token <- Sys.getenv("DATABRICKS_TOKEN", unset = "")
-  if (!nzchar(token)) {
-    token <- getPass::getPass("Please enter your Databricks PAT: ")
-    Sys.setenv(DATABRICKS_TOKEN = token)
-  }
-
-  check <- .uc_validate_pat(host, token)
-  if (!isTRUE(check$ok) && retry_on_auth) {
-    if (verbose) message("PAT appears invalid (status ", check$code, "). Please enter a valid PAT.")
-    token <- getPass::getPass("PAT invalid/expired. Please enter a valid Databricks PAT: ")
-    Sys.setenv(DATABRICKS_TOKEN = token)
-    check <- .uc_validate_pat(host, token)
-  }
-  if (!isTRUE(check$ok)) stop("Token invalid (status ", check$code, ").")
-
-  stopifnot(file.exists(local_path), startsWith(uc_path, "/Volumes/"))
-
-  parent <- sub("/[^/]+$", "", uc_path)
-  .uc_mkdirs(host, token, parent, verbose = verbose)
-
-  path_no_slash <- sub("^/", "", uc_path)
-  q_over <- tolower(as.character(isTRUE(overwrite)))
-
-  url_a <- paste0(host, "/api/2.0/fs/files/", utils::URLencode(path_no_slash, reserved = TRUE), "?overwrite=", q_over)
-  url_b <- paste0(host, "/api/2.1/unity-catalog/volumes/files/write?path=", utils::URLencode(uc_path, reserved = TRUE), "&overwrite=", q_over)
-
-  try_put <- function(u) {
-    cli::cli_inform("Uploading...")
-    hdr <- c(paste0("Authorization: Bearer ", token), "Content-Type: application/octet-stream")
-
-    ok <- tryCatch({
-      curl::curl_upload(file = local_path, url = u, httpheader = hdr, verbose = FALSE)
-      TRUE
-    }, error = function(e) {
-      if (verbose) message("  (fallback) ", conditionMessage(e))
-      FALSE
-    })
-    ok
-  }
-
-
-  ok <- try_put(url_a) || try_put(url_b)
-  if (!ok) stop("Upload failed via both endpoints. Check path, permissions, or network.")
-  if (verbose && ok) cli::cli_alert_success("Uploaded to {.path {uc_path}}")
-  invisible(uc_path)
-}
-
-
-#' Load an .RData file from Unity Catalog
+#' Validate Databricks connectivity (host + PAT)
 #'
-#' Downloads the file to a temporary location, loads it into `envir`, then deletes the temp file.
-#' Requires `DATABRICKS_HOST` to be set (e.g. via cluster init script).
+#' Prompts for `DATABRICKS_HOST` and `DATABRICKS_TOKEN` if missing, then
+#' verifies access by calling the Unity Catalog catalogs endpoint.
+#' Designed for RStudio Server sessions on Databricks.
 #'
-#' @param uc_path UC path to the .RData/.rda file.
-#' @param envir Environment to load objects into.
-#' @param ... Passed to internal downloader (e.g. `verbose`, `retry_on_auth`).
-#' @return (Invisible) character vector of object names created by `load()`.
+#' @param show_success Logical; if `TRUE`, shows a success dialog on connect.
+#' @return Invisibly returns a list with `ok = TRUE` and `host`.
+#' @details Requires a valid Databricks Personal Access Token (PAT).
 #' @export
-UC_load <- function(uc_path, envir = parent.frame(), ...) {
-  local_path <- .download_uc_file(uc_path, ...)
+connect <- function(show_success = TRUE) {
+
+  if (Sys.getenv("DATABRICKS_HOST") == "") {
+    Sys.setenv(
+      DATABRICKS_HOST = rstudioapi::showPrompt("DATABRICKS_HOST", "Please enter Databricks Host: ")
+    )
+  }
+  if (Sys.getenv("DATABRICKS_TOKEN") == "") {
+    Sys.setenv(
+      DATABRICKS_TOKEN = rstudioapi::askForSecret(
+        "DATABRICKS_TOKEN",
+        "Please enter your Personal Access Token (PAT): ",
+        "DATABRICKS_TOKEN"
+      )
+    )
+  }
+
+  repeat {
+
+    h <- curl::new_handle()
+    curl::handle_setheaders(h, Authorization = paste("Bearer", Sys.getenv("DATABRICKS_TOKEN")))
+    url <- paste0(Sys.getenv("DATABRICKS_HOST"), "/api/2.0/unity-catalog/catalogs?max_results=1")
+    res <- try(curl::curl_fetch_memory(url, handle = h), silent = TRUE)
+
+    if (inherits(res, "try-error")) {
+
+      err <- conditionMessage(attr(res, "condition"))
+
+      rstudioapi::showDialog(
+        "Failure",
+        paste0(
+          "<p>Unable to connect to host: </p>",
+          "<p><b>", Sys.getenv("DATABRICKS_HOST"), "</b></p>",
+          "<p></p>",
+          "<p>HTTP failure: ", err, "</p>"
+        )
+      )
+    } else if (!identical(res$status_code, 200L)) {
+
+      codes <- c(
+        "Okay." = '200',
+        "Invalid token." = '401',
+        "Token valid but not authorised for that endpoint/workspace." = '403',
+        "Wrong host/workspace, wrong path, endpoint not enabled." = '404'
+      )
+
+      code <- res$status_code
+
+      message <- names(which(codes == code))
+
+      rstudioapi::showDialog(
+        "Failure",
+        paste0(
+          "<p>Unable to connect to host: </p>",
+          "<p><b>", Sys.getenv("DATABRICKS_HOST"), "</b></p>",
+          "<p>Transport failure: ", message, "</p>"
+        )
+      )
+    } else if (identical(res$status_code, 200L)){
+
+      if (show_success){
+        rstudioapi::showDialog(
+          "Success",
+          paste0(
+            "<p>Connected to host:</p>",
+            "<p><b>", Sys.getenv("DATABRICKS_HOST"), "</b></p>"
+          )
+        )
+      }
+      return(invisible(list(ok = TRUE, host = Sys.getenv("DATABRICKS_HOST"))))
+    }
+
+    tryagain <- rstudioapi::showQuestion(
+      "Try again?",
+      "The last attempt failed. Review credentials and retry?",
+      "Yes", "No"
+    )
+    if (!tryagain) stop("User cancelled.")
+    Sys.setenv(
+      DATABRICKS_HOST  = rstudioapi::showPrompt("DATABRICKS_HOST", "Please enter Databricks Host: "),
+      DATABRICKS_TOKEN = rstudioapi::askForSecret(
+        "DATABRICKS_TOKEN",
+        "Please enter your Personal Access Token (PAT): ",
+        "DATABRICKS_TOKEN"
+      )
+    )
+  }
+}
+
+#' Download a Unity Catalog file to a temp path
+#'
+#' Streams a file from `/Volumes/...` via the Files API to a local temporary
+#' file and returns that path. Useful for passing into readers
+#' such as `readr::read_csv()`, `readxl::read_excel()`, `base::load()`, etc.
+#'
+#' @param path Character scalar UC path that begins with `/Volumes/`.
+#' @return Character scalar: local path of the downloaded file.
+#' @examples
+#' \dontrun{
+#' p <- download("/Volumes/my_cat/my_schema/tables/foo.csv")
+#' df <- read.csv(p)
+#' }
+#' @export
+download <- function(path){
+
+  connect(FALSE)
+
+  seg   <- sub("^/", "", path)
+  url   <- paste0(sub("/+$","", Sys.getenv("DATABRICKS_HOST")), "/api/2.0/fs/files/", utils::URLencode(seg, reserved = TRUE))
+
+  dest  <- tempfile(fileext = ".RData")
+  req   <- httr2::request(url) |>
+    httr2::req_auth_bearer_token(Sys.getenv("DATABRICKS_TOKEN")) |>
+    httr2::req_progress(type = "down")
+
+  resp  <- httr2::req_perform(req, path = dest)
+
+  return(dest)
+
+}
+
+#' List files in a Unity Catalog directory
+#'
+#' Lists objects in a UC volume directory and returns only files (not subdirs)
+#' with basic metadata.
+#'
+#' @param dir Character scalar UC directory starting with `/Volumes/`.
+#' @param pattern Optional regex to filter by file name.
+#' @return A `data.frame` with columns:
+#'   \describe{
+#'     \item{path}{Full UC path}
+#'     \item{name}{File name}
+#'     \item{file_size_MB}{Size in MiB (bytes / 1024^2)}
+#'     \item{last_modified}{POSIXct (UTC)}
+#'   }
+#' @examples
+#' \dontrun{
+#' UC_list_files("/Volumes/cat/schema/tables", pattern = "\\\\.RData$")
+#' }
+#' @export
+UC_list_files <- function(dir, pattern = NULL) {
+
+  connect(FALSE)
+
+  seg <- sub("^/", "", dir)
+  url <- paste0(sub("/+$", "", Sys.getenv("DATABRICKS_HOST")), "/api/2.0/fs/directories/", utils::URLencode(seg, reserved = TRUE))
+
+  req <- httr2::request(url) |>
+    httr2::req_auth_bearer_token(Sys.getenv("DATABRICKS_TOKEN"))
+
+  resp <- httr2::req_perform(req)
+
+  out <- httr2::resp_body_json(resp, simplifyVector = TRUE)
+
+  df <- as.data.frame(out$contents, stringsAsFactors = FALSE, optional = TRUE)
+
+  if(!is.null(pattern)){
+    df <- df[
+      !df$is_directory & grepl(pattern, df$name)
+      ,
+    ]
+  } else {
+    df <- df[
+      !df$is_directory
+      ,
+    ]
+  }
+
+  df$last_modified <- as.POSIXct(df$last_modified / 1000, origin = "1970-01-01", tz = "UTC")
+  df$file_size_MB  <- round(df$file_size / 1024^2, 2)
+
+  return(df[c(1,5,6,4)])
+}
+
+#' Upload a local file into a Unity Catalog path
+#'
+#' Performs an HTTP PUT to write a local file into a UC Volumes destination.
+#'
+#' @param local_path Existing local file path to upload.
+#' @param dest_uc_path Destination UC path beginning with `/Volumes/`.
+#' @param overwrite Logical; if `TRUE`, allow overwrite of the destination.
+#' @return Invisibly returns `dest_uc_path` on success.
+#' @examples
+#' \dontrun{
+#' tmp <- tempfile(fileext = ".csv"); write.csv(mtcars, tmp, row.names = FALSE)
+#' upload(tmp, "/Volumes/cat/schema/tables/mtcars.csv", overwrite = TRUE)
+#' }
+#' @export
+upload <- function(local_path, dest_uc_path, overwrite = TRUE){
+
+  connect(FALSE)
+
+  seg <- sub("^/", "", dest_uc_path)
+  url <- paste0(sub("/+$","", Sys.getenv("DATABRICKS_HOST")), "/api/2.0/fs/files/", utils::URLencode(seg, reserved = TRUE))
+
+  req <- httr2::request(url) |>
+    httr2::req_auth_bearer_token(Sys.getenv("DATABRICKS_TOKEN")) |>
+    httr2::req_method("PUT") |>
+    httr2::req_url_query(overwrite = if (overwrite) "true" else "false") |>
+    httr2::req_body_file(local_path, type = "application/octet-stream") |>
+    httr2::req_progress(type = "up")
+
+  resp <- httr2::req_perform(req)
+
+  invisible(dest_uc_path)
+}
+
+#' Load an `.RData` from Unity Catalog
+#'
+#' Downloads the UC file to a temporary location, loads objects into `envir`,
+#' then deletes the temp file.
+#'
+#' @param path UC path to the `.RData`/`.rda` file (must start with `/Volumes/`).
+#' @param envir Environment to load objects into (default parent frame).
+#' @return (Invisibly) character vector of object names created by `base::load()`.
+#' @examples
+#' \dontrun{
+#' UC_load("/Volumes/cat/schema/tables/snapshot.RData")
+#' }
+#' @export
+UC_load <- function(path, envir = parent.frame()) {
+
+  local_path <- download(path)
+
   on.exit(try(unlink(local_path), silent = TRUE), add = TRUE)
 
   cli::cli_inform("Loading...")
@@ -153,81 +243,60 @@ UC_load <- function(uc_path, envir = parent.frame(), ...) {
 
 #' Read a CSV from Unity Catalog
 #'
-#' Downloads the file to a temporary location, reads it with `read.csv()`, then deletes the temp file.
-#' Requires `DATABRICKS_HOST` to be set (e.g. via cluster init script).
+#' Downloads the UC file to a temp file and reads it with `utils::read.csv()`.
 #'
-#' @param uc_path UC path to the .csv file.
-#' @param ... Passed to `read.csv()`.
-#' @param stringsAsFactors Passed to `read.csv()`.
-#' @return A data.frame.
+#' @param path UC path to the `.csv` file (must start with `/Volumes/`).
+#' @param ... Passed through to `utils::read.csv()`.
+#' @param stringsAsFactors Logical; forwarded to `utils::read.csv()`.
+#' @return A `data.frame`.
+#' @examples
+#' \dontrun{
+#' df <- UC_read.csv("/Volumes/cat/schema/tables/foo.csv")
+#' }
 #' @export
-UC_read.csv <- function(uc_path, ..., stringsAsFactors = FALSE){
-  local_path <- .download_uc_file(uc_path, ...)
+UC_read.csv <- function(path, ..., stringsAsFactors = FALSE){
+
+  local_path <- download(path)
+
   on.exit(try(unlink(local_path), silent = TRUE), add = TRUE)
 
   cli::cli_inform("Loading...")
   dat <- utils::read.csv(local_path, ..., stringsAsFactors = stringsAsFactors)
 
-  fname <- basename(uc_path)
+  fname <- basename(path)
   cli::cli_alert_success("Loaded {fname}")
 
   dat
 }
 
-#' Download a Unity Catalog Volume file to a local path
+#' Save R objects and upload as `.RData` to Unity Catalog
 #'
-#' Downloads any `/Volumes/...` file via the Unity Catalog Files API to a local file
-#' (temporary by default) and returns that path. Handy for piping into readers such as
-#' [readxl::read_excel()], [readr::read_csv()], [vroom::vroom()], etc.
+#' Saves objects locally to a temporary `.RData` and uploads to a UC path.
+#' Works like `base::save()`, but targets `/Volumes/...`.
 #'
-#' @param uc_path Character scalar. Must start with `/Volumes/`.
-#' @param dest Optional local filesystem path. If `NULL`, a temp file is created.
-#' @param ... Passed through to the internal downloader (e.g., `retry_on_auth = TRUE`).
-#'
-#' @return Character scalar: the local file path that was written.
+#' @param file Object to save (or a named object); see Details.
+#' @param path Destination UC path, e.g. `/Volumes/cat/schema/tables/file.RData`.
+#' @param overwrite Logical; if `TRUE`, allow overwrite at destination.
+#' @details This wrapper currently saves the object provided in `file` using
+#'   `base::save(file, file = tmp)`. If you need to save multiple named objects,
+#'   adapt to collect their names with `substitute(list(...))` and call
+#'   `do.call(save, list(list = obj_names, file = tmp))`.
+#' @return Invisibly returns `path` on success.
 #' @examples
 #' \dontrun{
-#' p <- uc_download("/Volumes/prd_dash_lab/aphw_restricted/tables/.../file.xlsx")
-#' df <- readxl::read_excel(p)
+#' UC_save(mtcars, "/Volumes/cat/schema/tables/mtcars.RData", overwrite = TRUE)
 #' }
 #' @export
-UC_download <- function(uc_path, dest = NULL, ...) {
-  local_path <- .download_uc_file(uc_path, dest = dest, ...)
-  cli::cli_inform("Downloaded {.file {basename(uc_path)}} to {.path {local_path}}")
-  invisible(local_path)
-}
-
-#' Save R objects into a Unity Catalog Volume (.RData) and upload
-#'
-#' Works like [base::save()], but writes to a UC Volume path. Objects are saved
-#' locally to a temporary `.RData` file and then uploaded to `uc_path` using
-#' the Unity Catalog Files API.
-#'
-#' @param uc_path Character scalar UC path starting with `/Volumes/.../file.RData`.
-#' @param ... Objects to save (as in [base::save]).
-#' @param overwrite Logical; if `TRUE`, allow overwrite on the UC destination.
-#' @param compress Passed to [base::save()] (default `TRUE`).
-#' @param version Passed to [base::save()] (e.g., 2).
-#' @param verbose Logical; progress messages.
-#'
-#' @return Invisibly returns `uc_path` on success.
-#' @export
-UC_save <- function(uc_path, ..., overwrite = TRUE, compress = TRUE, version = NULL, verbose = TRUE) {
-  stopifnot(is.character(uc_path), length(uc_path) == 1L, startsWith(uc_path, "/Volumes/"))
-  if (!grepl("\\.RData$|\\.rda$", uc_path, ignore.case = TRUE)) {
-    uc_path <- paste0(uc_path, ".RData")
-  }
+UC_save <- function(file, path, overwrite = TRUE) {
 
   tmp <- tempfile(fileext = ".RData")
   on.exit(try(unlink(tmp), silent = TRUE), add = TRUE)
+
   cli::cli_inform("Saving...")
+  base::save(file, file = tmp)
+  cli::cli_alert_success("Saved {file}")
 
-  obj_names <- as.character(substitute(list(...)))[-1L]
-  args <- list(list = obj_names, file = tmp, compress = compress)
-  if (!is.null(version)) args$version <- version
-  do.call(base::save, args)
-
-  .upload_uc_file(local_path = tmp, uc_path = uc_path, overwrite = overwrite, verbose = verbose)
+  upload(local_path = tmp, dest_uc_path = path, overwrite = overwrite)
 }
 
 

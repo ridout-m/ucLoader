@@ -1,6 +1,6 @@
 Package: ucLoader
 Title: Unity Catalog File IO Helpers for R on Databricks
-Version: 0.2.0
+Version: 1.0.0
 Authors@R: 
     person("Mackenzie", "Ridout", , "Mackenzie.Ridout@defra.gov.uk", role = c("aut", "cre"))
 Description: Convenience helpers to access files stored in Databricks Unity
@@ -13,10 +13,11 @@ Description: Convenience helpers to access files stored in Databricks Unity
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.3.1
-Imports: 
-    cli,
+RoxygenNote: 7.3.3
+Imports:
     curl,
-    getPass
+    httr2,
+    rstudioapi,
+    cli
 URL: https://github.com/ridout-m/ucLoader
 BugReports: https://github.com/ridout-m/ucLoader/issues

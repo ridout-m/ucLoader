@@ -6,38 +6,24 @@
 <!-- badges: start -->
 <!-- badges: end -->
 
-Load files from Databricks Unity Catalog into R with a simple,
-consistent interface.
-
-This package is designed for use on rstudio-server / Databricks
-environments where:
-
-- The Databricks workspace URL is provided via an environment variable.
-- Users authenticate with a Personal Access Token (PAT) when required.
-- Files are downloaded to a temporary location on the machine running
-  the R session, then loaded.
+Load files from Databricks Unity Catalog (UC) into R with a simple,
+consistent interface. Works smoothly on RStudio Server running on
+Databricks.
 
 ## What it does
 
-- Downloads a file from Unity Catalog via the Databricks REST API
-- Stores it in a temporary file
-- Loads it into R using base functions
-- Deletes the temporary file automatically
-
-Exposed functions:
-
-- UC.read.csv(): download a CSV and return a data.frame
-- UC.load(): download an .RData/.rda and load objects into an
-  environment
+- Talks to UC Volumes via the Databricks REST API
+- Downloads to a local temp file and loads with base/readr/readxl/etc.
+- Uploads local files back to UC
+- Lists directory contents in UC (size, modified time, paths)
 
 ## Requirements
 
-This package expects the following environment variables:
+Environment variables:
 
-- DATABRICKS_HOST: the Databricks workspace URL (set by your cluster
-  init script)
-- DATABRICKS_TOKEN: a Databricks PAT (if missing you will be prompted
-  securely)
+- DATABRICKS_HOST: Databricks workspace URL (set by your cluster
+  BusAdmin or can be entered manually)
+- DATABRICKS_TOKEN: Databricks PAT (Personal Access Token)
 
 Notes:
 
@@ -52,83 +38,37 @@ Install the development version from GitHub:
 ``` r
 install.packages("remotes")
 remotes::install_github("ridout-m/ucLoader")
-```
-
-Then load it:
-
-``` r
 library(ucLoader)
 ```
 
-## Setup
+## Functions
 
-In your cluster init script, ensure DATABRICKS_HOST is set. Example:
+`connect(show_success = TRUE)` - Ensures
+DATABRICKS_HOST/DATABRICKS_TOKEN are present and valid (prompts if
+needed).
 
-``` bash
-export DATABRICKS_HOST="https://adb-xxxxxxxxxxxxxxxx.xx.azuredatabricks.net"
-```
+`UC_list_files(dir, pattern = NULL)` - Lists files in a UC directory
+(not recursive). Returns name, file_size_MB, last_modified (POSIXct
+UTC), path.
 
-In an interactive R session, if DATABRICKS_TOKEN is not set, ucLoader
-will prompt you for a PAT using getPass (your input is not echoed to the
-console).
+`download(path)` - Downloads a UC file to a temp path, you can then read
+it with any reader.
 
-If you prefer to set it manually for the current session:
+`upload(local_path, dest_uc_path, overwrite = TRUE)` - Uploads a local
+file to a UC path.
 
-``` r
-Sys.setenv(DATABRICKS_TOKEN = "dapiXXXXXXXXXXXXXXXXXXXXXXXX")
-```
+`UC_load(path, envir = parent.frame())` - Downloads a .RData / .rda and
+loads objects into envir.
 
-## Usage
+`UC_read.csv(path, ..., stringsAsFactors = FALSE)` - Downloads a CSV and
+reads it with utils::read.csv().
 
-### Read a CSV
-
-``` r
-library(ucLoader)
-
-df <- UC.read.csv("/Volumes/some_folder/my_objects.csv")
-str(df)
-```
-
-### Load an .RData into the global environment
-
-``` r
-UC.load("/Volumes/some_folder/my_objects.RData")
-```
-
-### Load an .RData into a specific environment
-
-``` r
-e <- new.env(parent = emptyenv())
-UC.load("/Volumes/some_folder/my_objects.RData", envir = e)
-ls(e)
-```
-
-## Behaviour and troubleshooting
-
-- If DATABRICKS_HOST is missing, the package stops with a clear error
-  message.
-- If DATABRICKS_TOKEN is missing, you will be prompted for a PAT.
-- If the PAT is invalid/expired, you will be prompted once to retry
-  (configurable by function args).
-- Downloads use two endpoints (A then B) for robustness across UC file
-  access modes.
-
-Common issues:
-
-- 403 / permission errors: check you have access to the UC path and the
-  PAT is correct.
-- “Both UC file endpoints failed”: confirm the UC path is correct and
-  that the workspace host is correct.
+`UC_save(file, path, overwrite = TRUE)` - Saves an object to a local
+.RData then uploads to UC.
 
 ## Development notes
 
 README.md is generated from README.Rmd.
-
-To re-render after changes:
-
-``` r
-devtools::build_readme()
-```
 
 ## License
 
