@@ -2,24 +2,43 @@
 % Please edit documentation in R/uc_loader.R
 \name{download}
 \alias{download}
-\title{Download a Unity Catalog file to a temp path}
+\title{Download a Unity Catalog file to a local temporary path}
 \usage{
 download(path)
 }
 \arguments{
-\item{path}{Character scalar UC path that begins with \verb{/Volumes/}.}
+\item{path}{Character scalar. A Unity Catalog file path beginning with
+\verb{/Volumes/}.}
 }
 \value{
-Character scalar: local path of the downloaded file.
+Character scalar. The local temporary file path containing the
+downloaded contents.
 }
 \description{
-Streams a file from \verb{/Volumes/...} via the Files API to a local temporary
-file and returns that path. Useful for passing into readers
-such as \code{readr::read_csv()}, \code{readxl::read_excel()}, \code{base::load()}, etc.
+Downloads a single file from a Unity Catalog volume path (starting with
+\verb{/Volumes/}) using the Databricks Files API (\verb{/api/2.0/fs/files/...}) and
+saves it to a local temporary file. Intended for workflows where downstream
+functions require a local filesystem path (e.g., \code{read.csv()}, \code{readr::read_csv()},
+\code{readxl::read_excel()}, \code{base::load()}).
+}
+\details{
+Calls \code{connect(FALSE)} to ensure \code{DATABRICKS_HOST} and \code{DATABRICKS_TOKEN}
+are available. The host is normalised to remove trailing slashes, and the
+UC path is URL-encoded before constructing the Files API URL.
+
+The destination filename is created with \code{tempfile()}. The file extension is
+inferred from \code{path}; if none is present, \code{.bin} is used. Progress is reported
+via \code{cli}. Download errors are converted to \code{cli::cli_abort()}.
 }
 \examples{
 \dontrun{
-p <- download("/Volumes/my_cat/my_schema/tables/foo.csv")
+# Download to a temp file, then read it locally
+p <- download("/Volumes/catalog/schema/volume/path/to/foo.csv")
 df <- read.csv(p)
+
+# Example for Excel
+x <- download("/Volumes/catalog/schema/volume/path/to/data.xlsx")
+tab <- readxl::read_excel(x)
 }
+
 }

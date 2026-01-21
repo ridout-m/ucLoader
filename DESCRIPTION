@@ -1,23 +1,28 @@
 Package: ucLoader
-Title: Unity Catalog File IO Helpers for R on Databricks
-Version: 1.0.0
-Authors@R: 
-    person("Mackenzie", "Ridout", , "Mackenzie.Ridout@defra.gov.uk", role = c("aut", "cre"))
+Title: Unity Catalog File I/O Helpers for R on Databricks
+Version: 1.2.0
+Authors@R:
+    person("Mackenzie", "Ridout", email = "Mackenzie.Ridout@defra.gov.uk", role = c("aut", "cre"))
 Description: Convenience helpers to access files stored in Databricks Unity
-    Catalog Volumes from R. Supports downloading via the Databricks REST API
-    and loading into an R session (e.g., reading CSV or loading .RData), and
-    saving objects back to Unity Catalog. Intended for RStudio Server on
-    Databricks where the workspace URL and personal access token are provided
-    via environment variables (DATABRICKS_HOST, DATABRICKS_TOKEN). Does not
-    require the /Volumes FUSE mount.
+    Catalog Volumes from R. Supports listing directories, binary-safe downloads
+    to local temporary paths, and binary-safe streaming uploads via the
+    Databricks Files API, plus helpers to load/read common formats into an R
+    environment. Supported formats include .qs2, .RData/.rda, .RDS, and .csv.
+    Intended for RStudio Server on Databricks where the workspace URL and a
+    personal access token are provided via environment variables
+    (DATABRICKS_HOST, DATABRICKS_TOKEN). Does not require the /Volumes FUSE
+    mount.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.3
 Imports:
+    cli,
     curl,
-    httr2,
     rstudioapi,
-    cli
+    utils,
+    tools,
+    qs2,
+    jsonlite
 URL: https://github.com/ridout-m/ucLoader
 BugReports: https://github.com/ridout-m/ucLoader/issues

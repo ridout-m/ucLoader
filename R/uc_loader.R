@@ -1,12 +1,53 @@
-#' Validate Databricks connectivity (host + PAT)
+default_obj_name <- function(path, fallback = "default_data") {
+  nm <- tools::file_path_sans_ext(basename(path))
+  nm <- tolower(nm)
+  nm <- gsub(" ", "_", nm)
+  if (!nzchar(nm)) nm <- fallback
+  if (grepl("^[0-9]", nm)) nm <- paste0("_", nm)
+  nm
+}
+
+do_assign <- function(obj, nm, envir) {
+  assign(nm, obj, envir)
+  cli::cli_alert_info(
+    "Data outputted as {.val {nm}}. Note: only {.val .RData/.rda} supports unassigned loading by default."
+  )
+  invisible(nm)
+}
+
+
+#' Connect to Databricks by validating host + PAT via Unity Catalog
 #'
-#' Prompts for `DATABRICKS_HOST` and `DATABRICKS_TOKEN` if missing, then
-#' verifies access by calling the Unity Catalog catalogs endpoint.
-#' Designed for RStudio Server sessions on Databricks.
+#' Ensures `DATABRICKS_HOST` and `DATABRICKS_TOKEN` are available (prompting in
+#' RStudio if missing), then checks connectivity/authorisation by calling the
+#' Unity Catalog catalogs endpoint (`/api/2.0/unity-catalog/catalogs`).
+#' On failure, shows an interactive dialog with the HTTP/transport error and
+#' optionally allows retrying after re-entering credentials.
 #'
-#' @param show_success Logical; if `TRUE`, shows a success dialog on connect.
-#' @return Invisibly returns a list with `ok = TRUE` and `host`.
-#' @details Requires a valid Databricks Personal Access Token (PAT).
+#' @param show_success Logical; if `TRUE`, shows a "Success" dialog when a
+#'   connection check returns HTTP 200.
+#'
+#' @return Invisibly returns a list with elements:
+#'   \describe{
+#'     \item{ok}{Logical, always `TRUE` on success.}
+#'     \item{host}{Character; the value of `DATABRICKS_HOST`.}
+#'   }
+#'
+#' @details
+#' This function is designed for interactive RStudio sessions and uses
+#' `rstudioapi` to prompt for the host and PAT (stored in environment variables).
+#' The request is made with `curl` using a Bearer token header. Non-200 status
+#' codes trigger a failure dialog; the user can choose to retry or cancel.
+#'
+#' @examples
+#' \dontrun{
+#' # Interactive: prompts for missing env vars and validates access.
+#' connect()
+#'
+#' # Same, but without a success dialog:
+#' connect(show_success = FALSE)
+#' }
+#'
 #' @export
 connect <- function(show_success = TRUE) {
 
@@ -97,33 +138,69 @@ connect <- function(show_success = TRUE) {
   }
 }
 
-#' Download a Unity Catalog file to a temp path
+#' Download a Unity Catalog file to a local temporary path
 #'
-#' Streams a file from `/Volumes/...` via the Files API to a local temporary
-#' file and returns that path. Useful for passing into readers
-#' such as `readr::read_csv()`, `readxl::read_excel()`, `base::load()`, etc.
+#' Downloads a single file from a Unity Catalog volume path (starting with
+#' `/Volumes/`) using the Databricks Files API (`/api/2.0/fs/files/...`) and
+#' saves it to a local temporary file. Intended for workflows where downstream
+#' functions require a local filesystem path (e.g., `read.csv()`, `readr::read_csv()`,
+#' `readxl::read_excel()`, `base::load()`).
 #'
-#' @param path Character scalar UC path that begins with `/Volumes/`.
-#' @return Character scalar: local path of the downloaded file.
+#' @param path Character scalar. A Unity Catalog file path beginning with
+#'   `/Volumes/`.
+#'
+#' @return Character scalar. The local temporary file path containing the
+#'   downloaded contents.
+#'
+#' @details
+#' Calls `connect(FALSE)` to ensure `DATABRICKS_HOST` and `DATABRICKS_TOKEN`
+#' are available. The host is normalised to remove trailing slashes, and the
+#' UC path is URL-encoded before constructing the Files API URL.
+#'
+#' The destination filename is created with `tempfile()`. The file extension is
+#' inferred from `path`; if none is present, `.bin` is used. Progress is reported
+#' via `cli`. Download errors are converted to `cli::cli_abort()`.
+#'
 #' @examples
 #' \dontrun{
-#' p <- download("/Volumes/my_cat/my_schema/tables/foo.csv")
+#' # Download to a temp file, then read it locally
+#' p <- download("/Volumes/catalog/schema/volume/path/to/foo.csv")
 #' df <- read.csv(p)
+#'
+#' # Example for Excel
+#' x <- download("/Volumes/catalog/schema/volume/path/to/data.xlsx")
+#' tab <- readxl::read_excel(x)
 #' }
+#'
 #' @export
 download <- function(path){
 
   connect(FALSE)
 
-  seg   <- sub("^/", "", path)
-  url   <- paste0(sub("/+$","", Sys.getenv("DATABRICKS_HOST")), "/api/2.0/fs/files/", utils::URLencode(seg, reserved = TRUE))
+  host  <- sub("/+$","", Sys.getenv("DATABRICKS_HOST"))
+  token <- Sys.getenv("DATABRICKS_TOKEN")
 
-  dest  <- tempfile(fileext = ".RData")
-  req   <- httr2::request(url) |>
-    httr2::req_auth_bearer_token(Sys.getenv("DATABRICKS_TOKEN")) |>
-    httr2::req_progress(type = "down")
+  seg    <- sub("^/", "", path)
+  url2.0 <- paste0(host, "/api/2.0/fs/files/", utils::URLencode(seg, reserved = TRUE))
 
-  resp  <- httr2::req_perform(req, path = dest)
+  ext   <- tools::file_ext(path); if (!nzchar(ext)) ext <- "bin"
+  dest  <- tempfile(fileext = paste0(".", ext))
+
+  h <- curl::new_handle()
+  curl::handle_setheaders(h, Authorization = paste("Bearer", token))
+
+  file <- sub(".*/", "", path)
+
+  cli::cli_progress_step("Downloading {.file {file}} to {.path {dest}}")
+
+  try <- tryCatch({
+    curl::curl_download(url = url2.0, destfile = dest, handle = h, quiet = TRUE)
+  }, error = function(e){
+    cli::cli_progress_done(result = "failed")
+    cli::cli_abort("{conditionMessage(e)}")
+  })
+
+  cli::cli_progress_done()
 
   return(dest)
 
@@ -131,172 +208,351 @@ download <- function(path){
 
 #' List files in a Unity Catalog directory
 #'
-#' Lists objects in a UC volume directory and returns only files (not subdirs)
-#' with basic metadata.
+#' Lists the contents of a Unity Catalog volume directory (a path beginning with
+#' `/Volumes/`) using the Databricks Files API directories endpoint and returns
+#' a `data.frame` of files with basic metadata. If `pattern` is supplied, results
+#' are filtered by filename using regular expressions.
 #'
-#' @param dir Character scalar UC directory starting with `/Volumes/`.
-#' @param pattern Optional regex to filter by file name.
+#' @param dir Character scalar. A Unity Catalog directory path beginning with
+#'   `/Volumes/`.
+#' @param pattern Optional character scalar. A regular expression used to filter
+#'   results by `name`.
+#' @param ignore_case Logical; passed to `grepl(ignore.case = ...)` when
+#'   `pattern` is provided.
+#'
 #' @return A `data.frame` with columns:
 #'   \describe{
-#'     \item{path}{Full UC path}
-#'     \item{name}{File name}
-#'     \item{file_size_MB}{Size in MiB (bytes / 1024^2)}
-#'     \item{last_modified}{POSIXct (UTC)}
+#'     \item{name}{File name.}
+#'     \item{path}{Full UC path.}
+#'     \item{file_size_MB}{File size in MiB, rounded to 2 decimals.}
+#'     \item{last_modified}{POSIXct timestamp in UTC.}
 #'   }
+#' If the directory exists but has no `contents`, returns `NULL` invisibly.
+#'
+#' @details
+#' Calls `connect(FALSE)` to ensure `DATABRICKS_HOST` and `DATABRICKS_TOKEN` are
+#' available. The directory path is URL-encoded and requested as JSON. The API
+#' returns `last_modified` as milliseconds since epoch; this is converted to a
+#' UTC `POSIXct`. File sizes are converted from bytes to MiB.
+#'
+#' Progress and errors are reported via `cli`. Transport failures trigger
+#' `cli::cli_abort()`.
+#'
 #' @examples
 #' \dontrun{
-#' UC_list_files("/Volumes/cat/schema/tables", pattern = "\\\\.RData$")
+#' # List everything
+#' list_files("/Volumes/cat/schema/volume/path")
+#'
+#' # Filter by extension (regex) and ignore case
+#' list_files("/Volumes/cat/schema/volume/path", pattern = "\\\\.rds$", ignore_case = TRUE)
 #' }
+#'
 #' @export
-UC_list_files <- function(dir, pattern = NULL) {
+list_files <- function(dir, pattern = NULL, ignore_case = FALSE) {
 
   connect(FALSE)
 
-  seg <- sub("^/", "", dir)
-  url <- paste0(sub("/+$", "", Sys.getenv("DATABRICKS_HOST")), "/api/2.0/fs/directories/", utils::URLencode(seg, reserved = TRUE))
+  host  <- sub("/+$","", Sys.getenv("DATABRICKS_HOST"))
+  token <- Sys.getenv("DATABRICKS_TOKEN")
 
-  req <- httr2::request(url) |>
-    httr2::req_auth_bearer_token(Sys.getenv("DATABRICKS_TOKEN"))
+  seg    <- sub("^/", "", dir)
+  url2.0 <- paste0(host, "/api/2.0/fs/directories/", utils::URLencode(seg, reserved = TRUE))
 
-  resp <- httr2::req_perform(req)
+  h <- curl::new_handle()
+  curl::handle_setheaders(h, Authorization = paste("Bearer", token), Accept = "application/json")
+  curl::handle_setopt(h, customrequest = "GET")
 
-  out <- httr2::resp_body_json(resp, simplifyVector = TRUE)
+  ptn <- if(is.null(pattern)) "all" else pattern
+
+  cli::cli_progress_step("Listing {ptn} files in {.path {dir}}\n")
+
+  resp <- tryCatch(
+    curl::curl_fetch_memory(url = url2.0, handle = h),
+    error = function(e) {
+      cli::cli_progress_done(result = "failed")
+      cli::cli_abort("{conditionMessage(e)}\n")
+    }
+  )
+
+  out  <- jsonlite::fromJSON(rawToChar(resp$content), simplifyVector = TRUE)
+
+  if (is.null(out$contents)){
+    cli::cli_progress_done()
+    cli::cli_alert_warning("Warning: No such list found\n")
+    invisible(return(NULL))
+  }
 
   df <- as.data.frame(out$contents, stringsAsFactors = FALSE, optional = TRUE)
 
-  if(!is.null(pattern)){
-    df <- df[
-      !df$is_directory & grepl(pattern, df$name)
-      ,
-    ]
-  } else {
-    df <- df[
-      !df$is_directory
-      ,
-    ]
+  if (!is.null(pattern)){
+    alt <- paste(sprintf("(%s)", pattern), collapse = "|")
+    df  <- df[grepl(alt, df$name, ignore.case = ignore_case), ]
   }
 
   df$last_modified <- as.POSIXct(df$last_modified / 1000, origin = "1970-01-01", tz = "UTC")
   df$file_size_MB  <- round(df$file_size / 1024^2, 2)
 
-  return(df[c(1,5,6,4)])
+  cli::cli_progress_done()
+
+  df[c("name", "path", "file_size_MB", "last_modified")]
+
 }
 
-#' Upload a local file into a Unity Catalog path
+#' Upload a local file to a Unity Catalog volume path
 #'
-#' Performs an HTTP PUT to write a local file into a UC Volumes destination.
+#' Uploads a local file to a Unity Catalog destination (a path beginning with
+#' `/Volumes/`) using the Databricks Files API (`/api/2.0/fs/files/...`) with an
+#' HTTP upload and optional overwrite. Can also enforce that the destination file
+#' extension matches the local file extension.
 #'
-#' @param local_path Existing local file path to upload.
-#' @param dest_uc_path Destination UC path beginning with `/Volumes/`.
-#' @param overwrite Logical; if `TRUE`, allow overwrite of the destination.
-#' @return Invisibly returns `dest_uc_path` on success.
+#' @param object Character scalar. Existing local file path to upload.
+#' @param path Character scalar. Destination Unity Catalog file path beginning
+#'   with `/Volumes/`.
+#' @param overwrite Logical; if `TRUE`, uploads with `overwrite=true` so an
+#'   existing destination file may be replaced.
+#' @param force_ext Logical; if `TRUE`, replaces the extension of `path` with the
+#'   extension of `object`. If `FALSE` and extensions differ, the user is warned
+#'   and prompted whether to continue.
+#'
+#' @return Invisibly returns the final destination UC path (after any extension
+#'   adjustment). If the user cancels after an extension mismatch warning,
+#'   returns `FALSE` invisibly.
+#'
+#' @details
+#' Calls `connect(FALSE)` to ensure `DATABRICKS_HOST` and `DATABRICKS_TOKEN` are
+#' available. The destination path is URL-encoded and uploaded as
+#' `application/octet-stream`. Progress and errors are reported via `cli`;
+#' transport failures trigger `cli::cli_abort()`.
+#'
 #' @examples
 #' \dontrun{
-#' tmp <- tempfile(fileext = ".csv"); write.csv(mtcars, tmp, row.names = FALSE)
-#' upload(tmp, "/Volumes/cat/schema/tables/mtcars.csv", overwrite = TRUE)
+#' # Save an object locally then upload to UC
+#' x <- data.frame(
+#'   int  = sample(1e3, replace = TRUE),
+#'   num  = rnorm(1e3),
+#'   char = sample(state.name, 1e3, replace = TRUE),
+#'   stringsAsFactors = FALSE
+#' )
+#' tmp_file <- tempfile(fileext = ".qs2")
+#' qs2::qs_save(x, tmp_file)
+#'
+#' # Upload (extension of 'path' will be forced to .qs2 if force_ext = TRUE)
+#' upload(tmp_file, "/Volumes/cat/schema/volume/path/saved temp file.qs2")
 #' }
+#'
 #' @export
-upload <- function(local_path, dest_uc_path, overwrite = TRUE){
+upload <- function(object, path, overwrite = TRUE, force_ext = TRUE) {
 
   connect(FALSE)
 
-  seg <- sub("^/", "", dest_uc_path)
-  url <- paste0(sub("/+$","", Sys.getenv("DATABRICKS_HOST")), "/api/2.0/fs/files/", utils::URLencode(seg, reserved = TRUE))
+  host  <- sub("/+$","", Sys.getenv("DATABRICKS_HOST"))
+  token <- Sys.getenv("DATABRICKS_TOKEN")
 
-  req <- httr2::request(url) |>
-    httr2::req_auth_bearer_token(Sys.getenv("DATABRICKS_TOKEN")) |>
-    httr2::req_method("PUT") |>
-    httr2::req_url_query(overwrite = if (overwrite) "true" else "false") |>
-    httr2::req_body_file(local_path, type = "application/octet-stream") |>
-    httr2::req_progress(type = "up")
+  q_over <- tolower(as.character(isTRUE(overwrite)))
 
-  resp <- httr2::req_perform(req)
+  ext_file <- tools::file_ext(object)
+  ext_path <- tools::file_ext(path)
 
-  invisible(dest_uc_path)
+  if (force_ext){
+    path <- paste0(tools::file_path_sans_ext(path), ".", ext_file)
+  } else if (!identical(tools::file_ext(object), ext_path)){
+    cli::cli_alert_warning("Warning: The file extension {.val {ext_file}} does not match the path extension {.val {ext_path}}.")
+    okay <- utils::askYesNo("Would you like to continue? The resulting output file may not be readable by the expected loader.", default = FALSE)
+    if (!isTRUE(okay)){
+      cli::cli_alert_warning("Operation Cancelled")
+      return(invisible(FALSE))
+    }
+  }
+
+  seg <- sub("^/", "", path)
+  url2.0 <- paste0(host, "/api/2.0/fs/files/", utils::URLencode(seg, reserved = TRUE), "?overwrite=", q_over)
+
+  cli::cli_progress_step("Uploading {.file {object}} to {.path {path}}")
+
+  hdr <- c(paste0("Authorization: Bearer ", token), "Content-Type: application/octet-stream")
+
+  try <- tryCatch({
+    curl::curl_upload(file = object, url = url2.0, httpheader = hdr, verbose = FALSE)
+  }, error = function(e) {
+    cli::cli_progress_done(result = "failed")
+    cli::cli_abort("{conditionMessage(e)}")
+  })
+
+  cli::cli_progress_done()
+
+  invisible(path)
 }
 
-#' Load an `.RData` from Unity Catalog
+#' Load a Unity Catalog file into an environment
 #'
-#' Downloads the UC file to a temporary location, loads objects into `envir`,
-#' then deletes the temp file.
+#' Downloads a Unity Catalog file to a temporary local path, reads it based on
+#' its extension, assigns the resulting object(s) into `envir`, and deletes the
+#' temporary file on exit.
 #'
-#' @param path UC path to the `.RData`/`.rda` file (must start with `/Volumes/`).
-#' @param envir Environment to load objects into (default parent frame).
-#' @return (Invisibly) character vector of object names created by `base::load()`.
+#' Supported extensions are `.qs2`, `.RData`/`.rda`, `.RDS`, and `.csv`.
+#'
+#' @param path Character scalar. Unity Catalog file path (typically under
+#'   `/Volumes/...`).
+#' @param ... Additional arguments passed to `utils::read.csv()` when `path` has
+#'   extension `.csv`.
+#' @param envir Environment into which objects are loaded/assigned. Defaults to
+#'   `parent.frame()`.
+#'
+#' @return Invisibly returns:
+#' \describe{
+#'   \item{For `.RData`/`.rda`:}{A character vector of object names created by
+#'   `base::load()`.}
+#'   \item{For `.qs2`, `.RDS`, `.csv`:}{The assigned object name (character
+#'   scalar).}
+#' }
+#'
+#' @details
+#' The file is first downloaded via `download()`. A temporary local file is
+#' removed via `on.exit()`. For `.qs2`, `.RDS`, and `.csv`, the object is read
+#' and assigned into `envir` using a name derived from the filename via
+#' `default_obj_name()`. For `.RData`/`.rda`, objects are loaded via `base::load()`.
+#'
+#' Progress and user-facing messages are emitted via `cli`. If the extension is
+#' unsupported, the function aborts.
+#'
 #' @examples
 #' \dontrun{
-#' UC_load("/Volumes/cat/schema/tables/snapshot.RData")
+#' # Load an .RData into the current environment
+#' ucload("/Volumes/cat/schema/volume/path/snapshot.RData")
+#'
+#' # Load a .qs2 and assign into a specific environment
+#' e <- new.env(parent = emptyenv())
+#' nm <- ucload("/Volumes/cat/schema/volume/path/model.qs2", envir = e)
+#' ls(e)
 #' }
+#'
 #' @export
-UC_load <- function(path, envir = parent.frame()) {
+ucload <- function(path, ..., envir = parent.frame()) {
 
   local_path <- download(path)
 
   on.exit(try(unlink(local_path), silent = TRUE), add = TRUE)
 
-  cli::cli_inform("Loading...")
-  objs <- base::load(local_path, envir = envir)
+  file <- sub(".*/", "", path)
 
-  cli::cli_alert_success("Loaded: {paste(objs, collapse = ', ')}")
-  invisible(objs)
+  cli::cli_progress_step("Loading {.file {file}}")
+
+  ext_path <- tolower(tools::file_ext(path))
+
+  out <- switch(
+    ext_path,
+    "rdata" = {
+      cli::cli_alert_info("Tip: Convert this file to {.val .qs2} for faster read/write.")
+      base::load(local_path, envir = envir)
+    },
+    "rda" = {
+      cli::cli_alert_info("Tip: Convert this file to {.val .qs2} for faster read/write.")
+      base::load(local_path, envir = parent.frame())
+    },
+    "rds" = {
+      obj <- base::readRDS(local_path)
+      nm  <- default_obj_name(file)
+      do_assign(obj, nm, envir)
+    },
+    "qs2" = {
+      obj <- qs2::qs_read(local_path)
+      nm  <- default_obj_name(file)
+      do_assign(obj, nm, envir)
+    },
+    "csv" = {
+      obj <- utils::read.csv(local_path, ...)
+      nm  <- default_obj_name(file)
+      do_assign(obj, nm, envir)
+    },
+    cli::cli_abort("\nFile path extension not supported by ucload()")
+  )
+
+  cli::cli_progress_done()
+  invisible(out)
 }
 
-#' Read a CSV from Unity Catalog
+#' Save an R object to a temporary file and upload to Unity Catalog
 #'
-#' Downloads the UC file to a temp file and reads it with `utils::read.csv()`.
+#' Serialises an R object to a temporary local file (chosen by `extension`) and
+#' uploads that file to a Unity Catalog destination path via `upload()`.
 #'
-#' @param path UC path to the `.csv` file (must start with `/Volumes/`).
-#' @param ... Passed through to `utils::read.csv()`.
-#' @param stringsAsFactors Logical; forwarded to `utils::read.csv()`.
-#' @return A `data.frame`.
+#' Supported output formats are `.qs2`, `.RData`, `.RDS`, and `.csv`.
+#'
+#' @param object R object to save.
+#' @param path Character scalar. Destination Unity Catalog file path (typically
+#'   beginning with `/Volumes/...`).
+#' @param overwrite Logical; if `TRUE`, allow overwriting an existing file at the
+#'   destination.
+#' @param extension Character scalar. One of `c(".qs2", ".RData", ".RDS", ".csv")`
+#'   indicating the temporary on-disk format to write before uploading.
+#' @param force_ext Logical; passed to `upload()`. If `TRUE`, forces the
+#'   destination filename extension to match the extension of the temporary file.
+#' @param ... Additional arguments passed to `utils::write.csv()` when
+#'   `extension = ".csv"`.
+#'
+#' @return Invisibly returns the destination UC path (character scalar) on
+#'   success (returned from `upload()`).
+#'
+#' @details
+#' The object is written to a temporary file created with `tempfile()`, which is
+#' deleted on exit. For `.RData`, the object is saved under its calling name
+#' (derived via `deparse(substitute(object))`) by assigning it into a temporary
+#' environment and calling `base::save(list = <name>, envir = <env>)`. For `.RDS`
+#' and `.qs2`, the object is written with `saveRDS()` or `qs2::qs_save()`,
+#' respectively. For `.csv`, the object is written with `utils::write.csv()`.
+#'
+#' Progress, file size, and compression hints are reported via `cli`.
+#'
 #' @examples
 #' \dontrun{
-#' df <- UC_read.csv("/Volumes/cat/schema/tables/foo.csv")
-#' }
-#' @export
-UC_read.csv <- function(path, ..., stringsAsFactors = FALSE){
-
-  local_path <- download(path)
-
-  on.exit(try(unlink(local_path), silent = TRUE), add = TRUE)
-
-  cli::cli_inform("Loading...")
-  dat <- utils::read.csv(local_path, ..., stringsAsFactors = stringsAsFactors)
-
-  fname <- basename(path)
-  cli::cli_alert_success("Loaded {fname}")
-
-  dat
-}
-
-#' Save R objects and upload as `.RData` to Unity Catalog
+#' # Default: save as .qs2 then upload
+#' ucsave(mtcars, "/Volumes/cat/schema/volume/path/mtcars.qs2", overwrite = TRUE)
 #'
-#' Saves objects locally to a temporary `.RData` and uploads to a UC path.
-#' Works like `base::save()`, but targets `/Volumes/...`.
+#' # Save as .RData (stores under the calling name)
+#' x <- mtcars
+#' ucsave(x, "/Volumes/cat/schema/volume/path/x", extension = ".RData")
 #'
-#' @param file Object to save (or a named object); see Details.
-#' @param path Destination UC path, e.g. `/Volumes/cat/schema/tables/file.RData`.
-#' @param overwrite Logical; if `TRUE`, allow overwrite at destination.
-#' @details This wrapper currently saves the object provided in `file` using
-#'   `base::save(file, file = tmp)`. If you need to save multiple named objects,
-#'   adapt to collect their names with `substitute(list(...))` and call
-#'   `do.call(save, list(list = obj_names, file = tmp))`.
-#' @return Invisibly returns `path` on success.
-#' @examples
-#' \dontrun{
-#' UC_save(mtcars, "/Volumes/cat/schema/tables/mtcars.RData", overwrite = TRUE)
+#' # Save as .csv with write.csv options
+#' ucsave(mtcars, "/Volumes/cat/schema/volume/path/mtcars.csv",
+#'        extension = ".csv", row.names = FALSE)
 #' }
+#'
 #' @export
-UC_save <- function(file, path, overwrite = TRUE) {
+ucsave <- function(object, path, overwrite = TRUE, extension = c(".qs2", ".RData", ".RDS", ".csv"), force_ext = TRUE, ...) {
 
-  tmp <- tempfile(fileext = ".RData")
+  extension <- match.arg(extension); tmp <- tempfile(fileext = extension)
+
   on.exit(try(unlink(tmp), silent = TRUE), add = TRUE)
 
-  cli::cli_inform("Saving...")
-  base::save(file, file = tmp)
-  cli::cli_alert_success("Saved {file}")
+  obj_label <- deparse(substitute(object))
+  cli::cli_progress_step("Saving {.file {obj_label}} to {.path {tmp}}")
 
-  upload(local_path = tmp, dest_uc_path = path, overwrite = overwrite)
+  if (extension == ".RData"){
+    cli::cli_alert_info("Tip: Convert this file to {.val .qs2} for faster read/write.")
+    e <- new.env(parent = emptyenv())
+    assign(obj_label, object, envir = e)
+    base::save(list = obj_label, file = tmp, envir = e, compress = TRUE)
+
+  } else if (extension == ".RDS"){
+    base::saveRDS(object, file = tmp)
+
+  } else if (extension == ".qs2"){
+    qs2::qs_save(object, file = tmp)
+
+  } else if (extension == ".csv"){
+    utils::write.csv(object, file = tmp, ..., )
+
+  } else cli::cli_abort("\nFile path extension not supported by ucsave()")
+
+  cli::cli_progress_done()
+
+  if (extension != ".csv") comp <- "(Compressed)" else comp <- "(Uncompressed)"
+
+  size <- round(file.size(tmp) / 1024 ^ 2, 2)
+  cli::cli_alert_info("File for upload is {size}MB {comp}")
+
+  upload(object = tmp, path = path, overwrite = overwrite, force_ext = force_ext)
+
 }
 
 

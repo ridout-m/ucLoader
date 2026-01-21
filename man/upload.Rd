@@ -2,26 +2,54 @@
 % Please edit documentation in R/uc_loader.R
 \name{upload}
 \alias{upload}
-\title{Upload a local file into a Unity Catalog path}
+\title{Upload a local file to a Unity Catalog volume path}
 \usage{
-upload(local_path, dest_uc_path, overwrite = TRUE)
+upload(object, path, overwrite = TRUE, force_ext = TRUE)
 }
 \arguments{
-\item{local_path}{Existing local file path to upload.}
+\item{object}{Character scalar. Existing local file path to upload.}
 
-\item{dest_uc_path}{Destination UC path beginning with \verb{/Volumes/}.}
+\item{path}{Character scalar. Destination Unity Catalog file path beginning
+with \verb{/Volumes/}.}
 
-\item{overwrite}{Logical; if \code{TRUE}, allow overwrite of the destination.}
+\item{overwrite}{Logical; if \code{TRUE}, uploads with \code{overwrite=true} so an
+existing destination file may be replaced.}
+
+\item{force_ext}{Logical; if \code{TRUE}, replaces the extension of \code{path} with the
+extension of \code{object}. If \code{FALSE} and extensions differ, the user is warned
+and prompted whether to continue.}
 }
 \value{
-Invisibly returns \code{dest_uc_path} on success.
+Invisibly returns the final destination UC path (after any extension
+adjustment). If the user cancels after an extension mismatch warning,
+returns \code{FALSE} invisibly.
 }
 \description{
-Performs an HTTP PUT to write a local file into a UC Volumes destination.
+Uploads a local file to a Unity Catalog destination (a path beginning with
+\verb{/Volumes/}) using the Databricks Files API (\verb{/api/2.0/fs/files/...}) with an
+HTTP upload and optional overwrite. Can also enforce that the destination file
+extension matches the local file extension.
+}
+\details{
+Calls \code{connect(FALSE)} to ensure \code{DATABRICKS_HOST} and \code{DATABRICKS_TOKEN} are
+available. The destination path is URL-encoded and uploaded as
+\code{application/octet-stream}. Progress and errors are reported via \code{cli};
+transport failures trigger \code{cli::cli_abort()}.
 }
 \examples{
 \dontrun{
-tmp <- tempfile(fileext = ".csv"); write.csv(mtcars, tmp, row.names = FALSE)
-upload(tmp, "/Volumes/cat/schema/tables/mtcars.csv", overwrite = TRUE)
+# Save an object locally then upload to UC
+x <- data.frame(
+  int  = sample(1e3, replace = TRUE),
+  num  = rnorm(1e3),
+  char = sample(state.name, 1e3, replace = TRUE),
+  stringsAsFactors = FALSE
+)
+tmp_file <- tempfile(fileext = ".qs2")
+qs2::qs_save(x, tmp_file)
+
+# Upload (extension of 'path' will be forced to .qs2 if force_ext = TRUE)
+upload(tmp_file, "/Volumes/cat/schema/volume/path/saved temp file.qs2")
 }
+
 }

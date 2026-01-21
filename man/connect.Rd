@@ -2,21 +2,41 @@
 % Please edit documentation in R/uc_loader.R
 \name{connect}
 \alias{connect}
-\title{Validate Databricks connectivity (host + PAT)}
+\title{Connect to Databricks by validating host + PAT via Unity Catalog}
 \usage{
 connect(show_success = TRUE)
 }
 \arguments{
-\item{show_success}{Logical; if \code{TRUE}, shows a success dialog on connect.}
+\item{show_success}{Logical; if \code{TRUE}, shows a "Success" dialog when a
+connection check returns HTTP 200.}
 }
 \value{
-Invisibly returns a list with \code{ok = TRUE} and \code{host}.
+Invisibly returns a list with elements:
+\describe{
+\item{ok}{Logical, always \code{TRUE} on success.}
+\item{host}{Character; the value of \code{DATABRICKS_HOST}.}
+}
 }
 \description{
-Prompts for \code{DATABRICKS_HOST} and \code{DATABRICKS_TOKEN} if missing, then
-verifies access by calling the Unity Catalog catalogs endpoint.
-Designed for RStudio Server sessions on Databricks.
+Ensures \code{DATABRICKS_HOST} and \code{DATABRICKS_TOKEN} are available (prompting in
+RStudio if missing), then checks connectivity/authorisation by calling the
+Unity Catalog catalogs endpoint (\verb{/api/2.0/unity-catalog/catalogs}).
+On failure, shows an interactive dialog with the HTTP/transport error and
+optionally allows retrying after re-entering credentials.
 }
 \details{
-Requires a valid Databricks Personal Access Token (PAT).
+This function is designed for interactive RStudio sessions and uses
+\code{rstudioapi} to prompt for the host and PAT (stored in environment variables).
+The request is made with \code{curl} using a Bearer token header. Non-200 status
+codes trigger a failure dialog; the user can choose to retry or cancel.
+}
+\examples{
+\dontrun{
+# Interactive: prompts for missing env vars and validates access.
+connect()
+
+# Same, but without a success dialog:
+connect(show_success = FALSE)
+}
+
 }
